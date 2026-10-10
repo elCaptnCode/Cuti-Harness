@@ -147,6 +147,33 @@ class FakePlanExecutor:
         )
 
 
+class CancellationAbsorbingPlanExecutor(FakePlanExecutor):
+    """One step absorbs task cancellation and returns, like a broad ``except BaseException``."""
+
+    def __init__(self, absorbing_step: str) -> None:
+        super().__init__()
+        self.absorbing_step = absorbing_step
+        self.started = asyncio.Event()
+
+    async def execute_plan_step(
+        self, *, build, step, completed_artifacts, idempotency_key,
+        report_remote_operation=None,
+    ) -> MediaArtifactVersion:
+        if step.step_id == self.absorbing_step:
+            self.started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass
+        return await super().execute_plan_step(
+            build=build,
+            step=step,
+            completed_artifacts=completed_artifacts,
+            idempotency_key=idempotency_key,
+            report_remote_operation=report_remote_operation,
+        )
+
+
 class ConcurrencyProbeExecutor(FakePlanExecutor):
     def __init__(self) -> None:
         super().__init__()
@@ -555,6 +582,77 @@ class InitialBuildTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(states[2].attempt, 3)
         self.assertEqual(states[2].remote_operation_id, "orphaned-provider-job")
         self.assertEqual(states[2].remote_provider, "fake-provider")
+
+    async def test_cancellation_absorbed_by_the_final_media_step_publishes_no_version(self):
+        runtime = await video_runtime()
+        project, version = await runtime.create_project(user_id="user", title="Stopped film")
+        plan = await runtime.plan_project(
+            project_id=project.id,
+            base_project_version_id=version.id,
+            video_spec=video_spec(),
+            idempotency_key="cancel-plan",
+        )
+        build = await runtime.start_build(
+            project_id=project.id,
+            plan_id=plan.id,
+            base_project_version_id=version.id,
+            idempotency_key="cancel-build",
+        )
+
+        async def validate(*, build_id, artifact):
+            return [ValidationResult(
+                project_id=project.id,
+                build_id=build_id,
+                artifact_version_id=artifact.id,
+                validator_id="test",
+                passed=True,
+            )]
+
+        runtime.validate_artifact = validate
+        final_step = [
+            item for item in topological_steps(plan.items) if item.action == "create"
+        ][-1].step_id
+        executor = CancellationAbsorbingPlanExecutor(final_step)
+        runtime._default_executor = executor
+        runtime._schedule_build(build)
+        await executor.started.wait()
+
+        cancelled = await runtime.cancel_build(project_id=project.id, build_id=build.id)
+
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(executor.calls[-1], final_step)
+        stopped = await runtime.repo.get_build(project.id, build.id)
+        self.assertEqual(stopped.status, "cancelled")
+        self.assertIsNone(stopped.project_version_id)
+        current = await runtime.repo.get_project(project.id)
+        self.assertEqual(current.current_version_id, version.id)
+
+    async def test_cancelled_initial_build_cannot_commit(self):
+        runtime = await video_runtime()
+        project, version = await runtime.create_project(user_id="user", title="Stopped film")
+        plan = await runtime.plan_project(
+            project_id=project.id,
+            base_project_version_id=version.id,
+            video_spec=video_spec(),
+            idempotency_key="cancel-commit-plan",
+        )
+        build = await runtime.start_build(
+            project_id=project.id,
+            plan_id=plan.id,
+            base_project_version_id=version.id,
+            idempotency_key="cancel-commit-build",
+        )
+        await runtime.cancel_build(project_id=project.id, build_id=build.id)
+
+        with self.assertRaisesRegex(ValueError, "cannot commit cancelled build"):
+            await runtime.repo.commit_initial_build(
+                build_id=build.id, artifacts=[], dependencies=[], validation_results=[],
+            )
+
+        stopped = await runtime.repo.get_build(project.id, build.id)
+        self.assertEqual(stopped.status, "cancelled")
+        current = await runtime.repo.get_project(project.id)
+        self.assertEqual(current.current_version_id, version.id)
 
 
 

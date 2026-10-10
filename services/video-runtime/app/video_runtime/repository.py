@@ -911,6 +911,8 @@ class InMemoryVideoProjectRepository:
                 raise LookupError("build not found")
             if build.status == "completed" and build.project_version_id:
                 return deepcopy(build), deepcopy(self.versions[build.project_version_id])
+            if build.status in {"failed", "cancelled"}:
+                raise ValueError(f"cannot commit {build.status} build")
             project = self._project(build.project_id)
             self._assert_version(project, build.base_project_version_id)
             if any(not item.passed for item in validation_results):
@@ -959,10 +961,19 @@ class InMemoryVideoProjectRepository:
         return deepcopy(build)
 
     async def update_build(self, build: Build) -> Build:
+        """Persist ``build`` unless the stored Build is already stopped.
+
+        A ``failed`` or ``cancelled`` Build changes status only through
+        ``requeue_failed_build`` or ``resume_cancelled_build``, and a
+        ``completed`` Build never changes; a write from a stale copy returns
+        the stored Build unchanged.
+        """
         async with self.lock:
             current = self.builds.get(build.id)
             if current is None or current.project_id != build.project_id:
                 raise LookupError("build not found")
+            if current.status in {"failed", "cancelled", "completed"}:
+                return deepcopy(current)
             build.updated_at = now()
             self.builds[build.id] = deepcopy(build)
             self._append_event(build.project_id, "build.status", {

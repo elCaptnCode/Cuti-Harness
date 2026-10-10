@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import unittest
@@ -51,6 +52,31 @@ class _FakeExecutor:
             } else f"postgres-test://{step.step_id}",
             metadata=metadata,
             content_digest=idempotency_key,
+        )
+
+
+class _CancellationAbsorbingExecutor(_FakeExecutor):
+    """Its first step absorbs task cancellation and returns, like a broad ``except BaseException``."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.calls = 0
+
+    async def rebuild_artifact(
+        self, *, build, source, completed_replacements, idempotency_key,
+    ) -> MediaArtifactVersion:
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass
+        return await super().rebuild_artifact(
+            build=build,
+            source=source,
+            completed_replacements=completed_replacements,
+            idempotency_key=idempotency_key,
         )
 
 
@@ -224,3 +250,59 @@ class PostgresVideoRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item.type == "video_mixed" for item in selected))
         await recovered.close()
         await recovered_repository.close()
+
+    async def test_cancellation_absorbed_by_a_step_still_stops_the_rebuild(self) -> None:
+        database_url = os.environ["VIDEO_RUNTIME_DATABASE_URL"]
+        suffix = uuid4().hex
+        repository = await PostgresVideoProjectRepository.connect(database_url)
+        runtime = VideoBuildRuntime(repository=repository)
+        project, _version = await runtime.create_project(
+            user_id=f"integration-user-{suffix}",
+            title="Postgres cancellation",
+            idempotency_key=f"create-{suffix}",
+        )
+        character = await runtime.add_artifact(MediaArtifactVersion(
+            project_id=project.id,
+            type="character",
+            uri="postgres-test://character-v1",
+        ))
+        shot_candidate = MediaArtifactVersion(
+            project_id=project.id,
+            type="video",
+            uri="postgres-test://shot-v1",
+        )
+        await runtime.add_artifact(shot_candidate, [ArtifactDependency(
+            project_id=project.id,
+            source_version_id=character.id,
+            target_version_id=shot_candidate.id,
+            invalidation_policy=ArtifactInvalidationPolicy.HARD,
+        )])
+        before = await repository.get_project(project.id)
+        preview = await runtime.preview_change(
+            project_id=project.id,
+            description="change the character wardrobe",
+            target_artifact_version_ids=[character.id],
+            idempotency_key=f"preview-{suffix}",
+        )
+        build = await runtime.apply_rebuild(
+            project_id=project.id,
+            plan_id=preview.id,
+            base_project_version_id=before.current_version_id,
+            idempotency_key=f"build-{suffix}",
+        )
+        executor = _CancellationAbsorbingExecutor()
+        runtime._default_executor = executor
+        runtime._schedule_build(build)
+        await executor.started.wait()
+
+        cancelled = await runtime.cancel_build(project_id=project.id, build_id=build.id)
+
+        self.assertEqual(cancelled.status, "cancelled")
+        stopped = await repository.get_build(project.id, build.id)
+        self.assertEqual(stopped.status, "cancelled")
+        self.assertIsNone(stopped.project_version_id)
+        self.assertEqual(executor.calls, 1)
+        after = await repository.get_project(project.id)
+        self.assertEqual(after.current_version_id, before.current_version_id)
+        await runtime.close()
+        await repository.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import sys
 from pathlib import Path
@@ -28,6 +29,31 @@ class DeterministicExecutor:
                 "idempotency_key": idempotency_key,
                 "upstream_replacements": sorted(completed_replacements),
             },
+        )
+
+
+class CancellationAbsorbingExecutor(DeterministicExecutor):
+    """Its first step absorbs task cancellation and returns, like a broad ``except BaseException``."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.calls = 0
+
+    async def rebuild_artifact(
+        self, *, build, source, completed_replacements, idempotency_key,
+    ):
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass
+        return await super().rebuild_artifact(
+            build=build,
+            source=source,
+            completed_replacements=completed_replacements,
+            idempotency_key=idempotency_key,
         )
 
 
@@ -132,6 +158,47 @@ class IncrementalRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(repeated.id, completed.id)
         self.assertEqual(repeated_version.id, version.id)
+
+    async def test_cancellation_absorbed_by_a_step_still_stops_the_rebuild(self):
+        runtime, project_id, character, *_ = await _project_fixture()
+        before = await runtime.repo.get_project(project_id)
+        plan = await runtime.preview_change(
+            project_id=project_id,
+            description="Change the hero clothing in shot 3",
+            target_artifact_version_ids=[character.id],
+        )
+        self.assertGreater(len(plan.ids_for("rebuild")), 1)
+        build = await runtime.apply_rebuild(
+            project_id=project_id,
+            plan_id=plan.id,
+            base_project_version_id=before.current_version_id,
+            idempotency_key="cancelled-rebuild",
+        )
+
+        async def validate(*, build_id, artifact):
+            return [ValidationResult(
+                project_id=project_id,
+                build_id=build_id,
+                artifact_version_id=artifact.id,
+                validator_id="test-continuity",
+                passed=True,
+            )]
+
+        runtime.validate_artifact = validate
+        executor = CancellationAbsorbingExecutor()
+        runtime._default_executor = executor
+        runtime._schedule_build(build)
+        await executor.started.wait()
+
+        cancelled = await runtime.cancel_build(project_id=project_id, build_id=build.id)
+
+        self.assertEqual(cancelled.status, "cancelled")
+        stopped = await runtime.repo.get_build(project_id, build.id)
+        self.assertEqual(stopped.status, "cancelled")
+        self.assertIsNone(stopped.project_version_id)
+        self.assertEqual(executor.calls, 1)
+        after = await runtime.repo.get_project(project_id)
+        self.assertEqual(after.current_version_id, before.current_version_id)
 
     async def test_character_change_rebuilds_only_affected_shot_and_commits_atomically(self):
         runtime, project_id, character, shot1, shot2, keyframe3, clip3, timeline = await _project_fixture()

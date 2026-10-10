@@ -763,6 +763,8 @@ class PostgresVideoProjectRepository:
             build = self._build(row)
             if build.status == "completed" and build.project_version_id:
                 return build, await self._get_version(connection, build.project_version_id)
+            if build.status in {"failed", "cancelled"}:
+                raise ValueError(f"cannot commit {build.status} build")
             project = await self._locked_project(connection, build.project_id)
             self._assert_version(project, build.base_project_version_id)
             if any(not item.passed for item in validation_results):
@@ -1302,17 +1304,31 @@ class PostgresVideoProjectRepository:
         return checkpoint
 
     async def update_build(self, build: Build) -> Build:
+        """Persist ``build`` unless the stored Build is already stopped.
+
+        A ``failed`` or ``cancelled`` Build changes status only through
+        ``requeue_failed_build`` or ``resume_cancelled_build``, and a
+        ``completed`` Build never changes; a write from a stale copy returns
+        the stored Build unchanged.
+        """
         build.updated_at = now()
         async with self.pool.acquire() as connection, connection.transaction():
             result = await connection.execute(
                 f"""UPDATE {self.schema}.builds SET status=$3,progress=$4,message=$5,
                 project_version_id=$6,error=$7,updated_at=$8,actual_cost=$9
-                WHERE id=$1 AND project_id=$2""",
+                WHERE id=$1 AND project_id=$2
+                  AND status NOT IN ('failed','cancelled','completed')""",
                 build.id, build.project_id, build.status, build.progress, build.message,
                 build.project_version_id, build.error, build.updated_at, build.actual_cost,
             )
             if result == "UPDATE 0":
-                raise LookupError("build not found")
+                row = await connection.fetchrow(
+                    f"SELECT * FROM {self.schema}.builds WHERE id=$1 AND project_id=$2",
+                    build.id, build.project_id,
+                )
+                if row is None:
+                    raise LookupError("build not found")
+                return self._build(row)
             await self._append_event(connection, build.project_id, "build.status", {
                 "build_id": build.id, "status": build.status,
                 "progress": build.progress, "message": build.message,
