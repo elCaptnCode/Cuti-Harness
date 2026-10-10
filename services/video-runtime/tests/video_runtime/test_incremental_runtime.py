@@ -159,7 +159,7 @@ class IncrementalRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repeated.id, completed.id)
         self.assertEqual(repeated_version.id, version.id)
 
-    async def test_cancellation_absorbed_by_a_step_still_stops_the_rebuild(self):
+    async def test_absorbed_cancellation_stops_the_rebuild_until_resumed(self):
         runtime, project_id, character, *_ = await _project_fixture()
         before = await runtime.repo.get_project(project_id)
         plan = await runtime.preview_change(
@@ -199,6 +199,15 @@ class IncrementalRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executor.calls, 1)
         after = await runtime.repo.get_project(project_id)
         self.assertEqual(after.current_version_id, before.current_version_id)
+
+        await runtime.resume_cancelled_build(project_id=project_id, build_id=build.id)
+        await asyncio.wait_for(runtime._build_tasks[build.id], 3)
+
+        resumed = await runtime.repo.get_build(project_id, build.id)
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(executor.calls, len(plan.ids_for("rebuild")))
+        committed = await runtime.repo.get_project(project_id)
+        self.assertEqual(committed.current_version_id, resumed.project_version_id)
 
     async def test_character_change_rebuilds_only_affected_shot_and_commits_atomically(self):
         runtime, project_id, character, shot1, shot2, keyframe3, clip3, timeline = await _project_fixture()
