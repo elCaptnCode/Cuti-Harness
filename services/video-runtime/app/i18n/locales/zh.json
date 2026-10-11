@@ -57,7 +57,8 @@
       "quota_exceeded": "生成额度暂时不足，请稍后重试。",
       "service_unavailable": "生成服务暂时繁忙，请稍后重试。",
       "invalid_input": "当前内容暂不被支持，请调整描述后重试。",
-      "unknown": "生成失败，请稍后重试。"
+      "unknown": "生成失败，请稍后重试。",
+      "quality_rejected": "生成结果未通过质量校验，请调整描述后重试。"
     },
     "stage_blocked": {
       "music": "音乐生成失败。后续镜头依赖音乐节奏，本次生成已终止，建议开启新对话重新生成。",

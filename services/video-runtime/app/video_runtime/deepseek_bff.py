@@ -1281,10 +1281,12 @@ async def _snapshot(
         project.id, [item.id for item in builds[:3]],
     )
     for build in builds[:3]:
-        from .moderation_recovery import failure_details, recovery_message
+        from .moderation_recovery import recovery_message
+        from .validation_feedback import task_failure_details, validation_rejections
         plan = await runtime.repo.get_plan(build.plan_id)
         planned = {item.step_id: item for item in plan.items}
         states = {item.plan_step_id: item for item in steps_by_build.get(build.id, [])}
+        rejections = await validation_rejections(runtime, project.id, plan, states)
         for step in steps_by_build.get(build.id, []):
             item = planned.get(step.plan_step_id)
             recovery = recovery_message(plan, item, step, states) if item else None
@@ -1303,7 +1305,10 @@ async def _snapshot(
                 ),
                 "remote_operation_id": step.remote_operation_id,
                 "error": step.error,
-                "failure": failure_details(plan, item, step, states) if item else None,
+                "failure": (
+                    task_failure_details(plan, item, step, states, rejections)
+                    if item else None
+                ),
                 "progress": 100 if step.status == "completed" else round(build.progress * 100),
                 "progress_message": recovery or build.message,
                 "created_at": build.created_at.isoformat(),

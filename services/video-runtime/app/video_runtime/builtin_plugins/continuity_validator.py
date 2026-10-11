@@ -261,6 +261,9 @@ class ContinuityValidatorPlugin(BaseVideoPlugin):
                     if visual["environment_dominant"]:
                         issues.append("rendered character setting reference is dominated by a scene")
                 except Exception as exc:
+                    if not issues:
+                        # The check reached no verdict; the failure is not a rejection.
+                        metadata["inconclusive"] = True
                     issues.append(f"character visual identity verification is incomplete: {exc}")
             return [ValidationResult(
                 project_id=artifact.project_id,
@@ -312,6 +315,9 @@ class ContinuityValidatorPlugin(BaseVideoPlugin):
                     if visual["contact_sheet_present"]:
                         issues.append("rendered scene setting reference is a multi-panel/contact sheet")
                 except Exception as exc:
+                    if not issues:
+                        # The check reached no verdict; the failure is not a rejection.
+                        metadata["inconclusive"] = True
                     issues.append(f"scene visual isolation verification is incomplete: {exc}")
             return [ValidationResult(
                 project_id=artifact.project_id,
@@ -356,6 +362,9 @@ class ContinuityValidatorPlugin(BaseVideoPlugin):
                 if parameters.get("require_audio") and not info.get("has_audio"):
                     issues.append("final video has no audio track")
             except BaseException as exc:
+                if not issues:
+                    # The probe reached no verdict; the failure is not a rejection.
+                    metadata["inconclusive"] = True
                 issues.append(f"final video probe failed: {exc}")
 
         return [ValidationResult(

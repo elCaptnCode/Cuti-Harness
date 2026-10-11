@@ -53,7 +53,8 @@
       "quota_exceeded": "Generation quota is temporarily exhausted. Please try again later.",
       "service_unavailable": "The generation service is temporarily busy. Please try again later.",
       "invalid_input": "This content is not supported right now. Please adjust the description and try again.",
-      "unknown": "Generation failed. Please try again later."
+      "unknown": "Generation failed. Please try again later.",
+      "quality_rejected": "The generated result did not pass the quality check. Please adjust the description and try again."
     },
     "stage_blocked": {
       "music": "Music generation failed. Later shots depend on the music rhythm, so this run has been stopped. We recommend starting a new conversation to generate again.",

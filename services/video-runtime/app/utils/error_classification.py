@@ -24,6 +24,7 @@ class FailureCategory(str, Enum):
     SERVICE_UNAVAILABLE = "service_unavailable"  # service temporarily unavailable / timeout
     INVALID_INPUT = "invalid_input"          # input / prompt not supported
     UNKNOWN = "unknown"                      # other unknown reasons
+    QUALITY_REJECTED = "quality_rejected"    # a Video Runtime validator rejected an artifact; never returned by classify_failure
 
 
 # keyword table (all matched lowercase). Order in classify_failure decides priority.
@@ -180,4 +181,5 @@ def _default_reason(category: FailureCategory) -> str:
         FailureCategory.SERVICE_UNAVAILABLE: "生成服务暂时繁忙，请稍后重试。",
         FailureCategory.INVALID_INPUT: "当前内容暂不被支持，请调整描述后重试。",
         FailureCategory.UNKNOWN: "生成失败，请稍后重试。",
+        FailureCategory.QUALITY_REJECTED: "生成结果未通过质量校验，请调整描述后重试。",
     }.get(category, "生成失败，请稍后重试。")

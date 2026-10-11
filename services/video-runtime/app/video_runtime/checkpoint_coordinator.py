@@ -7,7 +7,8 @@ import logging
 from .deepseek_client import DeepSeekHarnessClient
 from .models import PlanCheckpoint
 from .runtime import VideoBuildRuntime
-from .moderation_recovery import MODERATION_INSTRUCTION, failure_details
+from .moderation_recovery import MODERATION_INSTRUCTION
+from .validation_feedback import task_failure_details, validation_rejections
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ async def refresh_checkpoint(runtime: VideoBuildRuntime, checkpoint: PlanCheckpo
                  for item in states if item.status == "completed" and item.result_artifact_version_id]
     snapshot = []
     states_by_id = {item.plan_step_id: item for item in states}
+    rejections = await validation_rejections(runtime, checkpoint.project_id, plan, states_by_id)
     for item in states:
         planned = planned_by_id.get(item.plan_step_id)
         snapshot.append({
@@ -35,7 +37,10 @@ async def refresh_checkpoint(runtime: VideoBuildRuntime, checkpoint: PlanCheckpo
             "parameters": _checkpoint_task_parameters(planned.parameters if planned else {}),
             "status": item.status,
             "error": item.error,
-            "failure": failure_details(plan, planned, item, states_by_id) if planned else None,
+            "failure": (
+                task_failure_details(plan, planned, item, states_by_id, rejections)
+                if planned else None
+            ),
             "artifact_version_id": item.result_artifact_version_id,
         })
     instruction = checkpoint.planner_instruction.split("Task snapshot at notification time:", 1)[0]

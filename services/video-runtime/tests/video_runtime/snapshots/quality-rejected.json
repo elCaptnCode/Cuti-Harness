@@ -1,0 +1,23 @@
+{
+  "category": "quality_rejected",
+  "raw_error": "Artifact validation failed: rendered scene setting reference contains people or characters",
+  "task_id": "validate-1",
+  "provider": null,
+  "model": null,
+  "prompt": null,
+  "input_artifact_version_ids": [],
+  "repair_history": [],
+  "automatic_repairs_remaining": 1,
+  "requires_user_action": false,
+  "trigger_source": "validator",
+  "rejected_artifacts": [
+    {
+      "artifact_version_id": "<clip-1 version>",
+      "producer_task_id": "clip-1",
+      "validator_id": "cuti.continuity.scene-reference-isolation",
+      "issues": [
+        "rendered scene setting reference contains people or characters"
+      ]
+    }
+  ]
+}

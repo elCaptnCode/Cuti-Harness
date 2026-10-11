@@ -569,6 +569,9 @@ class ValidationResult(BaseModel):
     passed: bool
     score: float | None = None
     issues: list[str] = Field(default_factory=list)
+    # ``metadata["inconclusive"] = True`` marks a failing result whose check reached
+    # no verdict (for example a failed VLM call); Agent feedback does not report it as
+    # a rejection of the artifact.
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=now)
 

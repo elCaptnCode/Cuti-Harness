@@ -11,6 +11,7 @@ from .plan_utils import topological_steps
 from .models import Build, BuildStep, MediaArtifactVersion, PlanCheckpoint, ProjectVersion, RebuildPlan, RebuildPlanItem, now, uid
 from .repository import PlanRevisionConflict
 from .moderation_recovery import failure_details
+from .validation_feedback import task_failure_details, validation_rejections
 
 if TYPE_CHECKING:
     from .runtime import BuildStepExecutor, VideoBuildRuntime
@@ -48,6 +49,7 @@ async def _notify_agent(
         project = await runtime.repo.get_project(build.project_id)
         binding = await runtime.repo.latest_session_binding(build.project_id, project.user_id)
         session_id, user_id = binding.session_id, binding.user_id
+    rejections = await validation_rejections(runtime, build.project_id, plan, states)
     snapshot = [
         {
             "step_id": item.step_id,
@@ -57,7 +59,9 @@ async def _notify_agent(
             "parameters": _checkpoint_task_parameters(item.parameters),
             "status": states[item.step_id].status,
             "error": states[item.step_id].error,
-            "failure": failure_details(plan, item, states[item.step_id], states),
+            "failure": task_failure_details(
+                plan, item, states[item.step_id], states, rejections,
+            ),
             "artifact_version_id": states[item.step_id].result_artifact_version_id,
         }
         for item in plan.items
@@ -110,6 +114,9 @@ async def execute_continuous_build(
                 )
                 state.result_artifact_version_id = completed[planned.step_id].id
             elif planned.action == "validate":
+                # A requeued step still points at its previous attempt's report; a
+                # failed attempt must point only at the report it staged itself.
+                state.result_artifact_version_id = None
                 results = []
                 for dependency in planned.depends_on:
                     if dependency in completed:
